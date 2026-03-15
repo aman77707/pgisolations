@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0","wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgisolations"
+version = "0.1.0"
+description = "Postgres isolation prototypes"
+authors = [ { name = "Aman Bhardwaj" } ]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+  "python-dotenv>=0.13.0,<1",
+  "psycopg2-binary>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "black>=23.1",
+  "isort>=5.10",
+  "mypy>=0.991",
+]
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
