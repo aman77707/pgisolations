@@ -1,5 +1,5 @@
 """
-isolation_test.py
+test_isolation.py
 =================
 Demonstrates the behavioural difference between READ COMMITTED and
 REPEATABLE READ isolation levels on two classic anomalies:
@@ -17,7 +17,7 @@ REPEATABLE READ isolation levels on two classic anomalies:
 Usage
 -----
   # ensure Postgres is running (docker compose up -d)
-  uv run isolation_test.py
+  uv run test_isolation.py
 """
 
 import os
@@ -52,6 +52,7 @@ DSN: DataSourceName = {
 class IsolationLevel(Enum):
     READ_COMMITTED = psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED
     REPEATABLE_READ = psycopg2.extensions.ISOLATION_LEVEL_REPEATABLE_READ
+
 
 SEP = "-" * 64
 
@@ -108,7 +109,7 @@ def read_balance() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Test 1 — Non-repeatable read
+# Test 1 - Non-repeatable read
 # ---------------------------------------------------------------------------
 
 def test_non_repeatable_read(isolation: IsolationLevel) -> None:
@@ -178,7 +179,7 @@ def test_non_repeatable_read(isolation: IsolationLevel) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — Lost update
+# Test 2 - Lost update
 # ---------------------------------------------------------------------------
 
 def test_lost_update(isolation: IsolationLevel) -> None:
@@ -247,7 +248,7 @@ def test_lost_update(isolation: IsolationLevel) -> None:
         except Exception as exc:
             conn.rollback()
             results["t2_error"] = str(exc).strip()
-            print(f"    T2  ROLLED BACK — {exc}")
+            print(f"    T2  ROLLED BACK - {exc}")
         finally:
             conn.close()
 
@@ -276,7 +277,7 @@ def test_lost_update(isolation: IsolationLevel) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main() -> None:
     print("Setting up accounts table ...")
     setup()
     print("alice's initial balance = 100\n")
@@ -288,3 +289,7 @@ if __name__ == "__main__":
     print(f"\n{SEP}")
     print("  Done.")
     print(SEP)
+
+
+if __name__ == "__main__":
+    main()

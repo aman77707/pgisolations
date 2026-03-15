@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-isolation-test = "isolation_test:__main__"
+test-isolation = "tests.test_isolation:main"
 
 [project.optional-dependencies]
 dev = [
