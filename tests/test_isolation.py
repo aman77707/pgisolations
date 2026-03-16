@@ -50,8 +50,8 @@ DSN: DataSourceName = {
 
 
 class IsolationLevel(Enum):
-    READ_COMMITTED = psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED
-    REPEATABLE_READ = psycopg2.extensions.ISOLATION_LEVEL_REPEATABLE_READ
+    READ_COMMITTED = "READ COMMITTED"
+    REPEATABLE_READ = "REPEATABLE READ"
 
 
 SEP = "-" * 64
@@ -61,10 +61,17 @@ SEP = "-" * 64
 # Helpers
 # ---------------------------------------------------------------------------
 
-def connect(isolation: IsolationLevel) -> psycopg2.extensions.connection:
+def connect() -> psycopg2.extensions.connection:
+    """Return a raw autocommit connection. Transactions are managed explicitly."""
     conn = psycopg2.connect(**DSN)
-    conn.set_isolation_level(isolation.value)
+    conn.autocommit = True
     return conn
+
+
+def begin_transaction(cur: psycopg2.extensions.cursor, isolation: IsolationLevel) -> None:
+    """Open an explicit transaction at the given isolation level."""
+    cur.execute("BEGIN;")
+    cur.execute(f"SET TRANSACTION ISOLATION LEVEL {isolation.value};")
 
 
 def setup() -> None:
@@ -131,35 +138,47 @@ def test_non_repeatable_read(isolation: IsolationLevel) -> None:
     results: dict[str, Any] = {}
 
     def t1() -> None:
-        conn = connect(isolation)
+        conn = connect()
         with conn.cursor() as cur:
-            cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
-            row1 = cur.fetchone()
-            assert row1 is not None
-            results["read_1"] = row1[0]
-            print(f"    T1  read_1 = {results['read_1']}")
+            try:
+                begin_transaction(cur, isolation)
+                print(f"    T1  BEGIN ({isolation.name})")
 
-            barrier_a.wait()   # tell T2 to update
-            barrier_b.wait()   # wait for T2 to commit
+                cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
+                row1 = cur.fetchone()
+                assert row1 is not None
+                results["read_1"] = row1[0]
+                print(f"    T1  read_1 = {results['read_1']}")
 
-            cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
-            row2 = cur.fetchone()
-            assert row2 is not None
-            results["read_2"] = row2[0]
-            print(f"    T1  read_2 = {results['read_2']}")
-        conn.commit()
+                barrier_a.wait()   # tell T2 to update
+                barrier_b.wait()   # wait for T2 to commit
+
+                cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
+                row2 = cur.fetchone()
+                assert row2 is not None
+                results["read_2"] = row2[0]
+                print(f"    T1  read_2 = {results['read_2']}")
+
+                cur.execute("COMMIT;")
+                print("    T1  COMMIT")
+            except Exception as exc:
+                cur.execute("ROLLBACK;")
+                print(f"    T1  ROLLBACK - {exc}")
+                raise
         conn.close()
 
     def t2() -> None:
-        conn = connect(IsolationLevel.READ_COMMITTED)
+        conn = connect()
         barrier_a.wait()   # wait for T1's first read
         with conn.cursor() as cur:
+            begin_transaction(cur, IsolationLevel.READ_COMMITTED)
+            print(f"    T2  BEGIN ({IsolationLevel.READ_COMMITTED.name})")
             cur.execute(
                 "UPDATE accounts SET balance = 200 WHERE owner = 'alice';"
             )
-        conn.commit()
+            cur.execute("COMMIT;")
+            print("    T2  COMMIT - balance = 200")
         conn.close()
-        print("    T2  committed balance = 200")
         barrier_b.wait()   # signal T1
 
     th1 = threading.Thread(target=t1)
@@ -205,31 +224,43 @@ def test_lost_update(isolation: IsolationLevel) -> None:
     results: dict[str, Any] = {"t2_error": None}
 
     def t1() -> None:
-        conn = connect(isolation)
+        conn = connect()
         new_bal: int = 0
         with conn.cursor() as cur:
-            cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
-            row = cur.fetchone()
-            assert row is not None
-            balance: int = row[0]
-            print(f"    T1  read balance = {balance}")
-            barrier_a.wait()
+            try:
+                begin_transaction(cur, isolation)
+                print(f"    T1  BEGIN ({isolation.name})")
 
-            new_bal = balance + 50
-            cur.execute(
-                "UPDATE accounts SET balance = %s WHERE owner = 'alice';",
-                (new_bal,),
-            )
-        conn.commit()
+                cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
+                row = cur.fetchone()
+                assert row is not None
+                balance: int = row[0]
+                print(f"    T1  read balance = {balance}")
+                barrier_a.wait()
+
+                new_bal = balance + 50
+                cur.execute(
+                    "UPDATE accounts SET balance = %s WHERE owner = 'alice';",
+                    (new_bal,),
+                )
+                cur.execute("COMMIT;")
+                print(f"    T1  COMMIT - balance = {new_bal} (+50)")
+            except Exception as exc:
+                cur.execute("ROLLBACK;")
+                print(f"    T1  ROLLBACK - {exc}")
+                raise
+            finally:
+                barrier_b.wait()  # always unblock T2, even on error
         conn.close()
-        print(f"    T1  committed balance = {new_bal} (+50)")
-        barrier_b.wait()
 
     def t2() -> None:
-        conn = connect(isolation)
+        conn = connect()
         new_bal: int = 0
-        try:
-            with conn.cursor() as cur:
+        with conn.cursor() as cur:
+            try:
+                begin_transaction(cur, isolation)
+                print(f"    T2  BEGIN ({isolation.name})")
+
                 cur.execute("SELECT balance FROM accounts WHERE owner = 'alice';")
                 row = cur.fetchone()
                 assert row is not None
@@ -243,14 +274,13 @@ def test_lost_update(isolation: IsolationLevel) -> None:
                     "UPDATE accounts SET balance = %s WHERE owner = 'alice';",
                     (new_bal,),
                 )
-            conn.commit()
-            print(f"    T2  committed balance = {new_bal} (+30)")
-        except Exception as exc:
-            conn.rollback()
-            results["t2_error"] = str(exc).strip()
-            print(f"    T2  ROLLED BACK - {exc}")
-        finally:
-            conn.close()
+                cur.execute("COMMIT;")
+                print(f"    T2  COMMIT - balance = {new_bal} (+30)")
+            except Exception as exc:
+                cur.execute("ROLLBACK;")
+                results["t2_error"] = str(exc).strip()
+                print(f"    T2  ROLLBACK - {exc}")
+        conn.close()
 
     th1 = threading.Thread(target=t1)
     th2 = threading.Thread(target=t2)
@@ -262,7 +292,7 @@ def test_lost_update(isolation: IsolationLevel) -> None:
     final = read_balance()
     print(f"\n    Final balance = {final}  (wanted 180)")
 
-    if results["t2_error"]:
+    if results.get("t2_error") is not None:
         print(f"    [OK]  T2 serialization error -> retry required - expected for REPEATABLE READ")
         print(f"       error: {results['t2_error']}")
     elif final == 180:
